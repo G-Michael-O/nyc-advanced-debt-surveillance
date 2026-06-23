@@ -3,7 +3,7 @@ import requests
 from datetime import datetime, timedelta
 from groq import Groq
 
-print("🚀 Launching Version 8.0: Production-Grade Institutional Surveillance Engine...")
+print("🚀 Launching Version 8.2: Institutional Production Surveillance Engine...")
 
 # =====================================================================
 # 1. GOVERNANCE-APPROVED CALIBRATION METRICS
@@ -14,7 +14,8 @@ BOROUGH_BASELINES = {
 
 RULE_SCORE_MATRIX = {
     "FIRE_DAMAGE": 35, "STRUCTURAL_INSTABILITY": 30, "HARASSMENT_CLAIM": 25,
-    "HAZARDOUS_CLASS_1": 20, "LITIGATION_GENERAL": 15, "STANDARD_VIOLATION": 5
+    "HAZARDOUS_CLASS_1": 20, "LITIGATION_GENERAL": 15, "STANDARD_VIOLATION": 5,
+    "REMEDIATION_EVENT": 0  # Governance: Remediation events carry zero adverse weight
 }
 
 FRESH_WINDOW_DAYS = 30
@@ -80,7 +81,12 @@ try:
                 properties_db[full_key] = {"boro": boro_name, "events": []}
                 
             case_type = str(record.get("casetype", "")).upper()
-            event_cat = "HARASSMENT_CLAIM" if "HARASSMENT" in case_type else "LITIGATION_GENERAL"
+            
+            # Taxonomy Governance Filter
+            if any(k in case_type for k in ["CODE COMPLIANCE", "COMPLIED", "CORRECTED", "DISMISSED"]):
+                event_cat = "REMEDIATION_EVENT"
+            else:
+                event_cat = "HARASSMENT_CLAIM" if "HARASSMENT" in case_type else "LITIGATION_GENERAL"
             
             properties_db[full_key]["events"].append({
                 "cat": event_cat, 
@@ -111,14 +117,27 @@ try:
                 
             boro_raw = str(record.get("boro", "NYC")).upper()
             boro_name = "MANHATTAN" if "MANH" in boro_raw else "BRONX" if "BRONX" in boro_raw else "BROOKLYN" if "BROOK" in boro_raw else "QUEENS" if "QUEENS" in boro_raw else "STATEN ISLAND" if "STATEN" in boro_raw else "NYC"
-            full_key = f"{addr}, boro_name"
+            
+            # ✅ FIX 1: Corrected string interpolation variable wrapper
+            full_key = f"{addr}, {boro_name}"
             
             if full_key not in properties_db: 
                 properties_db[full_key] = {"boro": boro_name, "events": []}
                 
             desc = str(record.get("description", "")).upper()
             severity = str(record.get("violation_category", "")).upper()
-            event_cat = "FIRE_DAMAGE" if "FIRE" in desc else "STRUCTURAL_INSTABILITY" if ("FACADE" in desc or "COLLAPSE" in desc) else "HAZARDOUS_CLASS_1" if ("CLASS 1" in severity or "HAZARDOUS" in severity) else "STANDARD_VIOLATION"
+            
+            # ✅ FIX 2: Added structural remediation detection filter
+            if any(k in desc for k in ["CODE COMPLIANCE", "COMPLIED", "CORRECTED", "DISMISSED", "IN CODE-COMPLIAN"]):
+                event_cat = "REMEDIATION_EVENT"
+            elif "FIRE" in desc: 
+                event_cat = "FIRE_DAMAGE" 
+            elif "FACADE" in desc or "COLLAPSE" in desc: 
+                event_cat = "STRUCTURAL_INSTABILITY" 
+            elif "CLASS 1" in severity or "HAZARDOUS" in severity: 
+                event_cat = "HAZARDOUS_CLASS_1" 
+            else: 
+                event_cat = "STANDARD_VIOLATION"
             
             properties_db[full_key]["events"].append({
                 "cat": event_cat, 
@@ -133,7 +152,7 @@ except Exception as e:
 # =====================================================================
 if not properties_db or all(len(v["events"]) == 0 for v in properties_db.values()):
     print("\n========================================================")
-    print("📋 CRE SURVEILLANCE PLATFORM: VERSION 8.0 (PRODUCTION RUN)")
+    print("📋 CRE SURVEILLANCE PLATFORM: VERSION 8.2 (PRODUCTION RUN)")
     print("========================================================")
     print("⚠️ No qualifying public-record observations detected during this surveillance period.")
     if exceptions_log:
@@ -161,6 +180,11 @@ for addr, asset in properties_db.items():
         cat = ev["cat"]
         cat_counts[cat] = cat_counts.get(cat, 0) + 1
         is_recurring = cat_counts[cat] > 1
+        
+        # ✅ FIX 3: Updated classification terms (Recurring Unresolved Condition)
+        lifecycle_fresh = "NEW_EVENT" if not is_recurring else "Recurring Unresolved Condition"
+        lifecycle_old = "PERSISTENT_BACKGROUND" if not is_recurring else "Recurring Background Condition"
+        
         amplifier = 1.35 if is_recurring else 1.00
         is_fresh = ev["age_days"] <= FRESH_WINDOW_DAYS
         base_points = RULE_SCORE_MATRIX.get(cat, 5)
@@ -168,14 +192,14 @@ for addr, asset in properties_db.items():
         if is_fresh:
             points_added = base_points * amplifier
             current_score += points_added
-            lifecycle = "NEW_EVENT" if not is_recurring else "RECURRING_ACTIVE"
+            lifecycle = lifecycle_fresh
         else:
             points_added = base_points * amplifier * 0.70
             current_score += points_added
             historical_component_score += points_added
-            lifecycle = "PERSISTENT_BACKGROUND" if not is_recurring else "RECURRING_BACKGROUND"
+            lifecycle = lifecycle_old
             
-        event_traces.append(f"Type: {ev['desc']} | Code: {lifecycle} | Score Impact: +{int(points_added)}")
+        event_traces.append(f"Type: {ev['desc']} | Classification: {lifecycle} | Score Impact: +{int(points_added)}")
 
     current_score = min(int(current_score), 100)
     historical_component_score = min(int(historical_component_score), 100)
@@ -192,7 +216,10 @@ active_watchlist = sorted(active_watchlist, key=lambda x: x["current"], reverse=
 # =====================================================================
 # 5. NARRATIVE GENERATION COMPILER
 # =====================================================================
-data_context_payload = "WATCHLIST ASSETS (DETERMINISTICALLY SCORED BY DETACHED RULE-ENGINE):\n"
+watchlist_count = len(active_watchlist)
+
+data_context_payload = f"TOTAL_WATCHLIST_COUNT: {watchlist_count}\n"
+data_context_payload += "WATCHLIST ASSETS (DETERMINISTICALLY SCORED BY DETACHED RULE-ENGINE):\n"
 for asset in active_watchlist:
     data_context_payload += f"- ADDRESS: {asset['address']}\n"
     data_context_payload += f"  Mathematical Scores: Current={asset['current']}/100, Pre-Fresh Event Risk State={asset['historic_component']}/100, Net Fresh Velocity={asset['velocity']} points\n"
@@ -204,6 +231,7 @@ if exceptions_log:
 else:
     exceptions_payload += "- None"
 
+# ✅ FIX 4 & 5: Enhanced prompt constraints to eliminate count drift and enforce "Collateral Monitoring Commentary"
 prompt = f"""
 You are an executive commercial real estate debt risk reporting compiler. Rephrase this hardcoded mathematical output into clean reporting terminology.
 
@@ -219,15 +247,20 @@ For each property building row, follow with these exact narrative headers:
 - **PROPERTY**: [Address]
 - **CURRENT SCORE FACTOR**: [Current Score]/100
 - **OBSERVED PUBLIC RECORD EVENTS**: [Accurately list the open filings]
-- **CRITICAL OPERATIONAL REFLECTION**: [Objectively state the tracking of structural filings or litigation. Guardrail: Do not infer severity beyond the event description. Do not assume repairs, tenant displacement, capital expenditure amount, borrower financial stress, or loan default probability. Only restate observed public records.]
+- **COLLATERAL MONITORING COMMENTARY**: [Objectively state the tracking of structural filings or litigation. Guardrail: Observed public records indicate unresolved physical or regulatory conditions requiring continued monitoring and review of remediation status. Do not infer severity beyond the event description. Do not assume repairs, tenant displacement, capital expenditure amount, borrower financial stress, or loan default probability. Only restate observed public records.]
 
 ## 🔍 DATA QUALITY GATE RECONCILIATION
 [Output the data exceptions listed in the payload exactly as passed. State clearly that they are excluded from calculations pending manual file verification.]
 
 ## 📢 DISCIPLINED SYNDICATION SUMMARY
 Frame the update under 150 words using this exact opening statement:
-"Five NYC multifamily assets triggered elevated public-record surveillance signals this week. I built a public-record monitoring workflow that reviews housing litigation and building conditions across NYC multifamily properties. This week's review identified..."
-Objectively state the distribution of fresh vs legacy background metrics. 
+"This week, I tracked how quickly operational risk can emerge across NYC multifamily assets using a public-record surveillance workflow. Based on the exact {watchlist_count} monitored portfolio records in today's tracking payload, the review identified..."
+
+Guardrails:
+- Do not calculate or infer portfolio counts. Use only the exact asset counts provided in the system payload ({watchlist_count}). 
+- Do not include excluded data-quality records as monitored assets.
+- Do not use non-standard banking phrases like 'fresh background metrics' or 'legacy background metrics'. Rephrase to 'newly identified adverse public-record signals' or 'older persistent conditions'.
+
 Conclude with this mandatory compliance paragraph: "Public records do not determine borrower liquidity, DSCR performance, or loan default probability. However, they can provide an early indication of collateral issues that may warrant additional diligence before they appear in standard reporting cycles."
 Include these hashtags exactly: #CREFinance #CREDebt #RiskManagement #CommercialRealEstate #Multifamily
 """
