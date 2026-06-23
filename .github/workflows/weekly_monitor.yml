@@ -1,0 +1,27 @@
+name: Weekly NYC Risk Surveillance Engine
+
+on:
+  schedule:
+    - cron: '0 8 * * 1'  # Automatically executes every single Monday morning at 8:00 AM UTC
+  workflow_dispatch:     # Activates the manual "Run workflow" button in your GitHub dashboard
+
+jobs:
+  run-pipeline:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code Repository
+        uses: actions/checkout@v4
+
+      - name: Initialize Cloud Python Environment
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Load Hardened Data Engineering Libraries
+        run: |
+          pip install requests==2.31.0 pandas==2.2.0 httpx==0.27.0 groq==0.9.0
+
+      - name: Execute Surveillance & Generate Analysis
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+        run: python monitor.py
