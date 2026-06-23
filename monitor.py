@@ -1,6 +1,5 @@
 import os
 import requests
-import pandas as pd
 from datetime import datetime, timedelta
 from groq import Groq
 
@@ -25,21 +24,40 @@ SEVERITY = {
     "VIOLATION": 5
 }
 
-print("🚀 V7 CLEAN SURVEILLANCE ENGINE STARTING...")
+print("🚀 V7.1 CLEAN ENGINE STARTING...")
 
 # -----------------------------
-# DATA STORE (TRUTH ONLY)
+# STORAGE
 # -----------------------------
 assets = {}
 exceptions = []
 
-def clean_addr(item):
-    num = item.get("house_number") or item.get("buildingnumber") or ""
-    street = item.get("street_name") or item.get("streetname") or ""
+# -----------------------------
+# SAFE PARSER (NO FALLBACKS)
+# -----------------------------
+def parse_addr(item):
+    num = (
+        item.get("house_number")
+        or item.get("housenumber")
+        or item.get("address_number")
+        or ""
+    )
+
+    street = (
+        item.get("street_name")
+        or item.get("streetname")
+        or item.get("street")
+        or ""
+    )
+
+    num, street = str(num).strip(), str(street).strip()
+
     if not num or not street:
         exceptions.append(item)
-        return None
-    return f"{num} {street}"
+        return None, None
+
+    boro = BOROUGH_MAP.get(str(item.get("boroid") or item.get("boro") or ""), "NYC")
+    return f"{num} {street}", boro
 
 # -----------------------------
 # LITIGATIONS
@@ -48,15 +66,13 @@ lit_url = "https://data.cityofnewyork.us/resource/59kj-x8nc.json"
 
 lit = requests.get(
     lit_url,
-    params={"$where": f"caseopendate > '{cutoff}'", "$limit": 500}
+    params={"$where": f"caseopendate > '{cutoff}'", "$limit": 300}
 ).json()
 
 for r in lit:
-    addr = clean_addr(r)
+    addr, boro = parse_addr(r)
     if not addr:
         continue
-
-    boro = BOROUGH_MAP.get(r.get("boroid", ""), "NYC")
 
     assets.setdefault(addr, {"boro": boro, "score": 0, "events": []})
 
@@ -70,41 +86,51 @@ viol_url = "https://data.cityofnewyork.us/resource/3h2n-5cm9.json"
 
 viol = requests.get(
     viol_url,
-    params={"$where": f"issue_date > '{cutoff}'", "$limit": 500}
+    params={"$where": f"issue_date > '{cutoff}'", "$limit": 300}
 ).json()
 
 for r in viol:
-    addr = clean_addr(r)
+    addr, boro = parse_addr(r)
     if not addr:
         continue
 
     desc = (r.get("description") or "").upper()
-
-    boro = BOROUGH_MAP.get(r.get("boro"), "NYC")
 
     assets.setdefault(addr, {"boro": boro, "score": 0, "events": []})
 
     if "FIRE" in desc:
         assets[addr]["score"] += SEVERITY["FIRE"]
         assets[addr]["events"].append("FIRE")
+
     elif "STRUCT" in desc or "FACADE" in desc:
         assets[addr]["score"] += SEVERITY["STRUCTURAL"]
         assets[addr]["events"].append("STRUCTURAL")
+
     elif "HAZ" in desc:
         assets[addr]["score"] += SEVERITY["HAZARDOUS"]
         assets[addr]["events"].append("HAZARDOUS")
+
     else:
         assets[addr]["score"] += SEVERITY["VIOLATION"]
         assets[addr]["events"].append("VIOLATION")
 
 # -----------------------------
-# FINAL CLEAN SORT (NO FABRICATION)
+# HARD VALIDATION GATE (CRITICAL FIX)
+# -----------------------------
+if len(assets) == 0:
+    raise Exception("NO VALID PROPERTIES INGESTED — check NYC API fields or parsing logic")
+
+print("TOTAL PROPERTIES INGESTED:", len(assets))
+print("DATA QUALITY EXCEPTIONS:", len(exceptions))
+
+# -----------------------------
+# SORT TOP ASSETS
 # -----------------------------
 ranked = sorted(assets.items(), key=lambda x: x[1]["score"], reverse=True)[:10]
 
-summary = ""
+payload = ""
 for addr, d in ranked:
-    summary += f"""
+    payload += f"""
 PROPERTY: {addr}
 BOROUGH: {d['boro']}
 SCORE: {d['score']}
@@ -112,26 +138,24 @@ EVENTS: {', '.join(d['events'])}
 """
 
 # -----------------------------
-# LLM ONLY FORMATS OUTPUT
+# LLM (FORMAT ONLY — NO LOGIC)
 # -----------------------------
 prompt = f"""
-You are a compliance-based CRE reporting formatter.
+You are a strict CRE reporting formatter.
 
 RULES:
-- Do NOT invent properties
-- Do NOT add new data
-- Only use provided input
-- Do NOT extrapolate missing fields
+- DO NOT invent properties
+- DO NOT add missing data
+- ONLY use provided dataset
+- DO NOT hallucinate trends or geography
 
 DATA:
-{summary}
+{payload}
 
-Write:
-1. Portfolio summary (factual only)
+Return:
+1. Portfolio summary
 2. Asset list (same properties only)
-3. LinkedIn post (strictly based on provided data)
-
-No speculation.
+3. LinkedIn post (based ONLY on provided data)
 """
 
 response = client.chat.completions.create(
@@ -141,5 +165,5 @@ response = client.chat.completions.create(
     max_tokens=900
 )
 
-print("\n📊 V7 CLEAN OUTPUT")
+print("\n📊 V7.1 OUTPUT")
 print(response.choices[0].message.content)
