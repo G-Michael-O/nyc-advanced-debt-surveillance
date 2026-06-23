@@ -4,7 +4,7 @@ import pandas as pd
 from datetime import datetime, timedelta
 from groq import Groq
 
-# Initialize free Groq client securely using your GitHub environment secret
+# Initialize Groq client securely using your environment secret
 client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 
 # Configure precise time window (Last 7 days for fresh data ingestion)
@@ -19,13 +19,11 @@ BOROUGH_MAP = {
     "5": "STATEN ISLAND"
 }
 
-print("🚀 Launching Version 3.0: Automated Public Records Risk Surveillance Engine...")
+print("🚀 Launching Version 3.1: CRE Public Records Intelligence Engine...")
 
 # ============================================
-# 1. INSTITUTIONAL RISK SEVERITY MATRIX
+# 1. CALIBRATED SEVERITY SEED VALUES
 # ============================================
-# Points are carefully calibrated and additive up to a hard cap of 100.
-# Severe thresholds (80+) are strictly preserved for catastrophic legal/insolvency events.
 SEVERITY_MATRIX = {
     "FIRE_DAMAGE": 40,
     "STRUCTURAL_INSTABILITY": 35,
@@ -56,7 +54,7 @@ def parse_and_validate_record(item, boro_name, record_id, record_type):
     return f"{num} {street}, {boro_name}"
 
 # ============================================
-# 2. INGESTION & RISK AGGREGATION LAYERS
+# 2. DATA INGESTION & QUALITY GATES
 # ============================================
 lit_url = "https://data.cityofnewyork.us/resource/59kj-x8nc.json"
 lit_params = {"$where": f"caseopendate > '{cutoff}'", "$limit": 150}
@@ -121,45 +119,32 @@ except Exception as e:
     print(f"⚠️ Violations bypass: {e}")
 
 # ============================================
-# 3. WORKFLOW ACTION ROUTING MATRIX (0-100)
+# 3. ANALYSIS COMPILER & WORKFLOW ROUTING
 # ============================================
 endangered_assets = []
 for addr, details in properties_tracked.items():
-    calibrated_score = min(details["raw_points"], 100) # Enforce mathematical cap
+    calibrated_score = min(details["raw_points"], 100) # Capped at 100 max
     
-    # Restructured Strict Scale Framework with Recommended Actions
-    if calibrated_score <= 20:
-        tier = "Normal Monitoring"
-        action = "Continue routine market data monitoring."
-    elif calibrated_score <= 40:
-        tier = "Elevated Monitoring"
-        action = "Review new public records within 30 days; log operational trends."
-    elif calibrated_score <= 60:
-        tier = "Moderate Risk"
-        action = "Request property status update from sponsor; increase surveillance frequency."
-    elif calibrated_score <= 80:
-        tier = "High Risk"
-        action = "Escalate asset to Special Risk Committee for formal asset management review."
-    else:
-        tier = "Critical Risk"
-        action = "Immediate administrative review of collateral physical health and borrower exposure."
+    if calibrated_score <= 20:   tier = "Normal Monitoring"
+    elif calibrated_score <= 40: tier = "Elevated Monitoring"
+    elif calibrated_score <= 60: tier = "Moderate Risk"
+    elif calibrated_score <= 80: tier = "High Risk"
+    else:                        tier = "Critical Risk"
     
     endangered_assets.append((addr, {
         "score": calibrated_score,
         "tier": tier,
-        "action": action,
         "litigations": details["litigations"],
         "violations": details["violations"]
     }))
 
-# Isolate top risk concentrations for analysis
+# Isolate top risk concentrations
 endangered_assets = sorted(endangered_assets, key=lambda x: x[1]['score'], reverse=True)[:5]
 
 payload_summary = ""
 for addr, details in endangered_assets:
     payload_summary += f"\n📍 PROPERTY: {addr}\n"
     payload_summary += f"   - Risk Score: {details['score']}/100 [{details['tier']}]\n"
-    payload_summary += f"   - Recommended Action: {details['action']}\n"
     if details["litigations"]:
         payload_summary += f"   - Court Actions: {', '.join(set(details['litigations']))}\n"
     if details["violations"]:
@@ -173,33 +158,44 @@ if not payload_summary:
     payload_summary = "No property-level risk concentrations detected."
 
 # ============================================
-# 4. COMPLIANCE-LOCKED AI COMPILER
+# 4. COMPLIANCE-LOCKED AI TRANSFORMATION
 # ============================================
 analysis_prompt = f"""
 You are a senior, compliance-guarded commercial real estate debt surveillance officer. 
 Review this week's property-level public records data for NYC multifamily assets:
 
-PORTFOLIO WATCHLIST INTERFACE:
+PORTFOLIO RISK CONCENTRATIONS:
 {payload_summary}
 
 DATA QUALITY GATE RECORD EXCEPTIONS:
 {exceptions_summary}
 
-Generate a strictly professional, investment-grade portfolio report adhering exactly to these criteria:
+Generate a clean, professional, investment-grade surveillance report adhering strictly to these layout parameters:
 
 1. CREDIT RISK PROFILE ASSESSMENT:
-   - Detail assets crossing into Elevated, Moderate, or High-Risk tiers based on the strict action framework scale.
-   - Print out Data Quality Exceptions separate from scored assets exactly as structured in the exceptions text.
+   - Group the assets crossing into Elevated, Moderate, or High-Risk tiers.
    - Guardrail: Maintain measured lender language. Use the framework: "The accumulation of legal and physical distress indicators may increase the likelihood of operational challenges and elevated capital expenditure requirements. However, borrower liquidity and debt repayment capacity cannot be determined solely from public records and require a review of financial reporting."
 
-2. REVISED ACCURATE ACRIS MONITORING WORKFLOW:
-   - Outline the 3-step workflow using Mortgage Class Documents (MTG, Consolidated Mortgages, Assignments - ASST). 
-   - Explicitly include the correction: "The recorded holder of record should be distinguished from the current economic owner of the debt, which may require private servicing records, lender disclosures, or proprietary data sources to verify."
+2. DATA QUALITY GATE RECORD EXCEPTIONS:
+   - Output the data exceptions exactly as passed. Note that they are excluded from formal risk scoring pending manual verification.
 
-3. INSTITUTIONAL LINKEDIN UPDATE:
-   - Draft an analytical update under 170 words.
-   - Guardrail: Absolutely do NOT name specific street addresses, corporate LLC names, or private individual names. Focus entirely on borough names, asset classes, and general data trends.
-   - Guardrail: Frame the update as an independent professional perspective using this exact opening: "Tracking public records has changed the way I think about CRE risk surveillance. This week, my NYC multifamily monitoring workflow identified..."
+3. REVISED ACRIS MONITORING WORKFLOW:
+   - Output this exact 3-step technical standard to demonstrate credit authority:
+     1. Review Mortgage Class Documents (MTG, CEMA, Assignments-ASST): Identify the recorded mortgage holder and review the chain of recorded assignments.
+     2. Establish Recorded Lienholder History: Determine the latest recorded holder of record and identify any changes in the public assignment trail.
+     3. Escalate Ownership Verification When Necessary: If understanding the current economic owner of the debt is required, supplement public records with servicing reports, lender disclosures, or proprietary data sources.
+
+4. RECOMMENDED MONITORING ACTIONS:
+   - For every property listed in the Credit Risk Profile Assessment, output a distinct, operational asset management directive based on its risk tier:
+     - For High Risk: "Review recent DOB and legal filings. Determine whether violations remain open or have been remediated. Request updated property condition information if exposure exists. Increase monitoring frequency."
+     - For Moderate Risk: "Continue enhanced monitoring. Track whether additional legal or physical issues emerge. Review trends in future reporting periods."
+     - For Elevated Monitoring: "Maintain watchlist status. Reassess if additional adverse signals occur."
+
+5. INSTITUTIONAL LINKEDIN UPDATE:
+   - Draft an analytical update under 160 words.
+   - Guardrail: Do NOT name specific street addresses, specific building identifiers, or individual ownership names. 
+   - Guardrail: Frame the update from an independent perspective using this exact opening: "Tracking public records has changed the way I think about CRE risk surveillance. This week, my NYC multifamily public-record surveillance workflow identified..."
+   - Guardrail: Do NOT claim borough-wide trends or make default predictions. Frame the signal purely as a trigger for deeper property-level operational review.
    - Include these hashtags exactly: #CREFinance #CREDebt #RiskManagement #CommercialRealEstate #Multifamily
 """
 
@@ -207,11 +203,11 @@ try:
     response = client.chat.completions.create(
         model="llama-3.1-8b-instant",
         messages=[{"role": "user", "content": analysis_prompt}],
-        max_tokens=950,
-        temperature=0.1
+        max_tokens=1000,
+        temperature=0.10  # Locked down tight to prevent creative interpretation
     )
     print("\n========================================================")
-    print("📋 RE SURVEILLANCE REPORT: VERSION 3.0 (WORKFLOW PLATFORM)")
+    print("📋 RE SURVEILLANCE REPORT: VERSION 3.1 (PRODUCTION HARDENED)")
     print("========================================================")
     print(response.choices[0].message.content)
     print("========================================================")
