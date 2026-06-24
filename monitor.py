@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 from collections import defaultdict
 from groq import Groq
 
-print("🚀 Launching Version 8.6: Institutional Credit Surveillance Engine...")
+print("🚀 Launching Version 8.6b: Institutional Credit Surveillance Engine...")
 
 # =====================================================================
 # 1. GOVERNANCE CALIBRATION
@@ -20,7 +20,6 @@ RULE_SCORE_MATRIX = {
     "REMEDIATION_EVENT": 0
 }
 
-# Institutional risk buckets
 RISK_BUCKETS = {
     (80, 100): ("CRITICAL",  "Immediate asset management review and escalation"),
     (65,  79): ("ELEVATED",  "Enhanced monitoring and remediation follow-up"),
@@ -34,7 +33,6 @@ def get_risk_bucket(score):
             return label, action
     return "MONITOR", "Routine surveillance"
 
-# Tiered anomaly flags
 def get_anomaly_flag(z):
     if z is None:   return ""
     if z >= 2.5:    return "⛔ EXTREME ANOMALY"
@@ -42,7 +40,6 @@ def get_anomaly_flag(z):
     elif z >= 1.5:  return "⚠️ MILD ANOMALY"
     return ""
 
-# Escalation rules engine
 ESCALATION_RULES = [
     {
         "id": "RULE_FIRE_STRUCTURAL_COMBO",
@@ -70,7 +67,6 @@ def evaluate_escalation(fingerprint):
         for r in ESCALATION_RULES if r["condition"](fingerprint)
     ]
 
-# Full event description map (v8.3 strength)
 EVENT_DESCRIPTION_MAP = {
     "REMEDY: SEAL ALL FIRE DAM":   "Remedy – Seal all fire damage and unsafe conditions",
     "STRUCTURE RENDERED NON-CO":   "Structure rendered non-compliant",
@@ -140,16 +136,16 @@ def classify_event(raw_desc, severity="", case_type=""):
     if any(k in desc or k in ct for k in ["CODE COMPLIANCE","COMPLIED","CORRECTED","DISMISSED","IN CODE-COMPLIAN"]):
         return "REMEDIATION_EVENT", "Remediation Recorded", "REMEDIATED"
     elif "FIRE" in desc:
-        return "FIRE_DAMAGE",           "Fire Damage or Safety Condition",     "OPEN"
+        return "FIRE_DAMAGE",            "Fire Damage or Safety Condition",   "OPEN"
     elif "FACADE" in desc or "COLLAPSE" in desc or "DEMOLISH" in desc:
-        return "STRUCTURAL_INSTABILITY","Facade or Structural Instability",    "OPEN"
+        return "STRUCTURAL_INSTABILITY", "Facade or Structural Instability",  "OPEN"
     elif "CLASS 1" in sev or "HAZARDOUS" in sev:
-        return "HAZARDOUS_CLASS_1",     "Hazardous Condition Class 1",         "OPEN"
+        return "HAZARDOUS_CLASS_1",      "Hazardous Condition Class 1",       "OPEN"
     elif "HARASSMENT" in ct:
-        return "HARASSMENT_CLAIM",      "Tenant Harassment Claim",             "OPEN"
+        return "HARASSMENT_CLAIM",       "Tenant Harassment Claim",           "OPEN"
     elif ct and ct not in ["", "UNK"]:
-        return "LITIGATION_GENERAL",    "General Housing Litigation",          "OPEN"
-    return "STANDARD_VIOLATION",        "Standard DOB Violation",              "OPEN"
+        return "LITIGATION_GENERAL",     "General Housing Litigation",        "OPEN"
+    return "STANDARD_VIOLATION",         "Standard DOB Violation",            "OPEN"
 
 def deduplicate_events(events, max_ev=MAX_EVENTS_PROPERTY):
     seen, deduped = {}, []
@@ -161,7 +157,6 @@ def deduplicate_events(events, max_ev=MAX_EVENTS_PROPERTY):
     return deduped[:max_ev]
 
 def compute_z_score(score, scores_list):
-    """Borough-normalized z-score. Population = all scored properties in same borough this run."""
     n = len(scores_list)
     if n < 2:
         return None, None, None
@@ -198,15 +193,14 @@ try:
         full_key  = f"{addr}, {boro_name}"
         if full_key not in properties_db:
             properties_db[full_key] = {"boro": boro_name, "events": []}
-        case_type      = str(record.get("casetype", ""))
-        et, ec, es     = classify_event("", "", case_type)
-        readable_desc  = expand_description(f"Litigation: {case_type}")
+        case_type     = str(record.get("casetype", ""))
+        et, ec, es    = classify_event("", "", case_type)
+        readable_desc = expand_description(f"Litigation: {case_type}")
         properties_db[full_key]["events"].append({
             "event_type": et, "event_class": ec, "event_status": es,
             "impact_score": RULE_SCORE_MATRIX.get(et, 5),
             "age_days": (datetime.now() - event_date).days,
-            "event_date": event_date,
-            "readable_desc": readable_desc
+            "event_date": event_date, "readable_desc": readable_desc
         })
 except Exception as e:
     exceptions_log.append(f"Litigation API Failure: {e}")
@@ -232,16 +226,15 @@ try:
         full_key  = f"{addr}, {boro_name}"
         if full_key not in properties_db:
             properties_db[full_key] = {"boro": boro_name, "events": []}
-        desc           = str(record.get("description", ""))
-        severity       = str(record.get("violation_category", ""))
-        et, ec, es     = classify_event(desc, severity)
-        readable_desc  = expand_description(f"DOB: {desc}")
+        desc          = str(record.get("description", ""))
+        severity      = str(record.get("violation_category", ""))
+        et, ec, es    = classify_event(desc, severity)
+        readable_desc = expand_description(f"DOB: {desc}")
         properties_db[full_key]["events"].append({
             "event_type": et, "event_class": ec, "event_status": es,
             "impact_score": RULE_SCORE_MATRIX.get(et, 5),
             "age_days": (datetime.now() - event_date).days,
-            "event_date": event_date,
-            "readable_desc": readable_desc
+            "event_date": event_date, "readable_desc": readable_desc
         })
 except Exception as e:
     exceptions_log.append(f"DOB Violations API Failure: {e}")
@@ -252,12 +245,8 @@ if not properties_db or all(len(v["events"]) == 0 for v in properties_db.values(
     exit()
 
 # =====================================================================
-# 4. SCORE ENGINE — CLEAN SEPARATION: SCORE / MOMENTUM / VELOCITY
+# 4. SCORE ENGINE
 # =====================================================================
-# Score    = absolute lifetime risk state (capped 0–100)
-# Momentum = fresh 30-day event accumulation only
-# Velocity = acceleration = momentum(0-30D) minus prior momentum(31-60D)
-
 calculated_portfolio = []
 borough_scores       = defaultdict(list)
 
@@ -276,8 +265,7 @@ for addr, asset in properties_db.items():
         cat_counts[cat] = cat_counts.get(cat, 0) + 1
         is_recurring  = cat_counts[cat] > 1
         amplifier     = 1.35 if is_recurring else 1.00
-        base_points   = ev["impact_score"]
-        points        = base_points * amplifier
+        points        = ev["impact_score"] * amplifier
         age           = ev["age_days"]
 
         if age <= FRESH_WINDOW_DAYS:
@@ -303,10 +291,10 @@ for addr, asset in properties_db.items():
             "is_fresh":         age <= FRESH_WINDOW_DAYS
         })
 
-    current_score   = min(int(lifetime_score), 100)
-    momentum_30d    = min(int(momentum_30d), 100)
-    prior_momentum  = min(int(prior_momentum), 100)
-    velocity        = momentum_30d - prior_momentum
+    current_score  = min(int(lifetime_score), 100)
+    momentum_30d   = min(int(momentum_30d), 100)
+    prior_momentum = min(int(prior_momentum), 100)
+    velocity       = momentum_30d - prior_momentum
 
     if velocity >= 30:   trend = "▲▲ Rapid Acceleration"
     elif velocity >= 10: trend = "▲ Accelerating"
@@ -314,7 +302,6 @@ for addr, asset in properties_db.items():
     elif velocity == 0:  trend = "→ Stable"
     else:                trend = "▼ Decelerating"
 
-    # Property fingerprint
     fingerprint = {
         "fire_events":       sum(1 for e in structured_events if e["event_type"] == "FIRE_DAMAGE"),
         "structural_events": sum(1 for e in structured_events if e["event_type"] == "STRUCTURAL_INSTABILITY"),
@@ -325,7 +312,6 @@ for addr, asset in properties_db.items():
         "dominant_type":     max(cat_counts, key=cat_counts.get) if cat_counts else "NONE"
     }
 
-    # Causal attribution — top 3 drivers by cumulative impact
     driver_scores = {}
     for ev in structured_events:
         t = ev["event_type"]
@@ -341,26 +327,19 @@ for addr, asset in properties_db.items():
     compressed_events           = deduplicate_events(structured_events)
 
     result = {
-        "address":            addr,
-        "boro":               boro,
-        "current":            current_score,
-        "momentum_30d":       momentum_30d,
-        "prior_momentum":     prior_momentum,
-        "velocity":           velocity,
-        "trend":              trend,
-        "bucket_label":       bucket_label,
-        "bucket_action":      bucket_action,
-        "fingerprint":        fingerprint,
-        "escalation_flags":   escalation_flags,
+        "address": addr, "boro": boro,
+        "current": current_score, "momentum_30d": momentum_30d,
+        "prior_momentum": prior_momentum, "velocity": velocity, "trend": trend,
+        "bucket_label": bucket_label, "bucket_action": bucket_action,
+        "fingerprint": fingerprint, "escalation_flags": escalation_flags,
         "causal_attribution": causal_attribution,
-        "events":             compressed_events,
-        "driver_scores":      driver_scores
+        "events": compressed_events, "driver_scores": driver_scores
     }
     calculated_portfolio.append(result)
     borough_scores[boro].append(current_score)
 
 # =====================================================================
-# 5. BOROUGH-NORMALIZED Z-SCORE + TIERED ANOMALY
+# 5. Z-SCORE + ANOMALY
 # =====================================================================
 for asset in calculated_portfolio:
     scores       = borough_scores[asset["boro"]]
@@ -371,7 +350,7 @@ for asset in calculated_portfolio:
     asset["anomaly"] = get_anomaly_flag(z)
 
 # =====================================================================
-# 6. WEIGHTED CLUSTER EXPOSURE
+# 6. WEIGHTED CLUSTERS
 # =====================================================================
 recency_weight   = lambda age: 1.0 if age <= FRESH_WINDOW_DAYS else 0.7 if age <= 60 else 0.5
 cluster_exposure = defaultdict(float)
@@ -381,7 +360,7 @@ for asset in calculated_portfolio:
 top_clusters = sorted(cluster_exposure.items(), key=lambda x: x[1], reverse=True)[:MAX_CLUSTERS_SHOWN]
 
 # =====================================================================
-# 7. WATCHLIST FILTER
+# 7. WATCHLIST
 # =====================================================================
 active_watchlist = sorted(
     [a for a in calculated_portfolio if a["current"] >= WATCHLIST_THRESHOLD],
@@ -390,7 +369,7 @@ active_watchlist = sorted(
 watchlist_count = len(active_watchlist)
 
 # =====================================================================
-# 8. PORTFOLIO SYSTEMIC RISK INDEX DECOMPOSITION
+# 8. SYSTEMIC RISK INDEX
 # =====================================================================
 if active_watchlist:
     total_score        = sum(a["current"] for a in active_watchlist)
@@ -411,154 +390,95 @@ else:
     systemic_decomp = "  No active watchlist properties."
 
 # =====================================================================
-# 9. PROMPT ASSEMBLY — FULL PROPERTY DETAIL + TOKEN DISCIPLINE
+# 9. BUILD STRUCTURED DATA OBJECTS FOR TWO-PROMPT STRATEGY
 # =====================================================================
-data_payload = (
-    f"WATCHLIST_COUNT: {watchlist_count} | SYSTEMIC_RISK_INDEX: {systemic_index}/100\n"
-    f"SYSTEMIC DECOMPOSITION:\n{systemic_decomp}\n\n"
+
+# --- PROMPT 1 DATA: Matrix + Data Quality Gate + Syndication Summary ---
+matrix_rows = []
+for a in active_watchlist:
+    z_str = f"{a['z_score']}" if a["z_score"] is not None else "N/A"
+    matrix_rows.append(
+        f"| {a['address']} | {a['boro']} | {a['current']}/100 | {a['momentum_30d']} pts "
+        f"| {a['velocity']:+d} pts | {a['trend']} | {a['bucket_label']} | Z={z_str} | {a['anomaly'] or 'None'} |"
+    )
+
+cluster_lines = "\n".join(
+    f"  {ct.replace('_',' ').title()}: {round(exp,1)}"
+    for ct, exp in top_clusters
 )
+exceptions_lines = "\n".join(f"  - {e}" for e in exceptions_log[:3]) if exceptions_log else "  - None"
 
-for asset in active_watchlist:
-    fp = asset["fingerprint"]
-    z_context = (
-        f"Z={asset['z_score']} (μ={asset['z_mu']}, σ={asset['z_sigma']}, "
-        f"population=all {asset['boro']} properties this run)"
-        if asset["z_score"] is not None
-        else "Z=N/A (insufficient borough sample)"
-    )
-    data_payload += (
-        f"PROPERTY: {asset['address']} | BOROUGH: {asset['boro']}\n"
-        f"  COLLATERAL RISK SCORE : {asset['current']}/100\n"
-        f"  MOMENTUM (30D)        : {asset['momentum_30d']} pts\n"
-        f"  PRIOR MOMENTUM (31-60D): {asset['prior_momentum']} pts\n"
-        f"  VELOCITY (ACCEL)      : {asset['velocity']:+d} pts\n"
-        f"  TREND                 : {asset['trend']}\n"
-        f"  RISK BUCKET           : {asset['bucket_label']} — {asset['bucket_action']}\n"
-        f"  Z-SCORE               : {z_context}\n"
-        f"  ANOMALY               : {asset['anomaly'] if asset['anomaly'] else 'None'}\n"
-        f"  FINGERPRINT           : Fire={fp['fire_events']} | Structural={fp['structural_events']} | "
-        f"Fresh Events={fp['fresh_event_count']} | Recurrence Index={fp['recurrence_index']} | "
-        f"Dominant Type={fp['dominant_type']}\n"
-    )
-    if asset["escalation_flags"]:
-        data_payload += "  ESCALATION FLAGS:\n"
-        for flag in asset["escalation_flags"]:
-            data_payload += f"    ⚠️  {flag}\n"
-    else:
-        data_payload += "  ESCALATION FLAGS: None\n"
+prompt_1 = f"""
+You are an institutional CRE credit surveillance compiler. Produce Section 1 and Section 2 of a formal lender memo. Be precise. No padding. No inference beyond public records.
 
-    data_payload += "  CAUSAL ATTRIBUTION (TOP DRIVERS):\n"
-    for d in asset["causal_attribution"]:
-        data_payload += f"    {d}\n"
+RUN DATE: {datetime.now().strftime('%B %d, %Y %H:%M')}
+WATCHLIST COUNT: {watchlist_count}
+SYSTEMIC RISK INDEX: {systemic_index}/100
+DECOMPOSITION:
+{systemic_decomp}
 
-    data_payload += f"  OBSERVED PUBLIC RECORD EVENTS ({len(asset['events'])} recorded):\n"
-    for ev in asset["events"]:
-        data_payload += (
-            f"    EVENT TYPE       : {ev['event_type'].replace('_',' ').title()}\n"
-            f"    EVENT CLASS      : {ev['event_class']}\n"
-            f"    STATUS           : {ev['event_status']}\n"
-            f"    DESCRIPTION      : {ev['readable_desc']}\n"
-            f"    IMPACT SCORE     : +{ev['impact_score']} pts\n"
-            f"    EVENT DATE       : {ev['event_date']}\n"
-            f"    DAYS OUTSTANDING : {ev['days_outstanding']}\n"
-            f"    ---\n"
-        )
-    data_payload += "\n"
-
-cluster_payload = "WEIGHTED CLUSTER EXPOSURE (impact score × recency weight):\n"
-for ctype, exposure in top_clusters:
-    cluster_payload += f"  {ctype.replace('_',' ').title()}: {round(exposure,1)}\n"
-
-exceptions_payload = "DATA QUALITY EXCLUSIONS:\n"
-exceptions_payload += "\n".join(f"  - {e}" for e in exceptions_log[:3]) if exceptions_log else "  - None"
-
-# =====================================================================
-# 10. LLM NARRATIVE GENERATION
-# =====================================================================
-prompt = f"""
-You are an institutional CRE credit surveillance compiler producing a formal lender memo.
-Convert the structured payload below into a clean, precise, audit-ready credit report.
-No padding. No repetition. No inference beyond observed public records.
-
-{data_payload}
-{cluster_payload}
-{exceptions_payload}
+WEIGHTED CLUSTER EXPOSURE:
+{cluster_lines}
 
 RISK BUCKET REFERENCE:
-| Score  | Bucket   | Recommended Action                              |
+| Score  | Bucket   | Action                                          |
 |--------|----------|-------------------------------------------------|
-| 80–100 | CRITICAL | Immediate asset management review               |
-| 65–79  | ELEVATED | Enhanced monitoring and remediation follow-up   |
-| 50–64  | WATCH    | Standard watchlist review                       |
+| 80-100 | CRITICAL | Immediate asset management review               |
+| 65-79  | ELEVATED | Enhanced monitoring and remediation follow-up   |
+| 50-64  | WATCH    | Standard watchlist review                       |
 | <50    | MONITOR  | Routine surveillance                            |
+
+MATRIX DATA:
+| Property Address | Borough | Collateral Risk Score | Momentum (30D) | Velocity | Trend | Risk Bucket | Z-Score | Anomaly Flag |
+|---|---|---|---|---|---|---|---|---|
+{chr(10).join(matrix_rows)}
+
+DATA QUALITY EXCLUSIONS:
+{exceptions_lines}
 
 ===== OUTPUT FORMAT =====
 
 ## 📊 CREDIT SURVEILLANCE MEMORANDUM — {datetime.now().strftime('%B %d, %Y')}
 
-Open with a one-line portfolio headline:
-"Surveillance run completed: [watchlist_count] properties flagged at or above {WATCHLIST_THRESHOLD}/100. Portfolio Systemic Risk Index: {systemic_index}/100."
+One-line portfolio headline:
+"Surveillance run completed: {watchlist_count} properties flagged at or above {WATCHLIST_THRESHOLD}/100. Portfolio Systemic Risk Index: {systemic_index}/100."
 
-Then produce a Markdown matrix table with these columns:
-Property Address | Borough | Collateral Risk Score | Momentum (30D) | Velocity | Trend | Risk Bucket | Z-Score | Anomaly Flag
+Then reproduce the matrix table exactly as provided above.
 
-Then for each property produce a structured property card using exactly this format:
-
----
-### [ADDRESS] | [BOROUGH]
-**Risk Bucket:** [BUCKET LABEL] — [ACTION]
-**Collateral Risk Score:** [SCORE]/100 | **Momentum (30D):** [MOMENTUM] pts | **Velocity:** [VELOCITY:+d] pts | **Trend:** [TREND]
-**Z-Score:** [Z] (μ=[MU], σ=[SIGMA], population: all [BOROUGH] properties this run) | **Anomaly:** [FLAG or None]
-
-**Escalation Flags:**
-[List each triggered rule or state "No escalation rules triggered"]
-
-**Causal Attribution — Top Risk Drivers:**
-[List each driver exactly as provided]
-
-**Observed Public Record Events:**
-| # | Event Type | Event Class | Status | Description | Impact | Event Date | Days Outstanding |
-|---|-----------|-------------|--------|-------------|--------|------------|-----------------|
-[One row per event]
-
-**Collateral Monitoring Commentary:**
-[One paragraph. Restate only what the public records show. Reference event type, days outstanding, and recurrence status. Do not infer borrower financial condition, default probability, capital needs, or tenant displacement.]
-
----
+Then:
 
 ## 🔍 DATA QUALITY GATE & METHODOLOGY
 
-**Watchlist Criteria:** Properties scoring ≥{WATCHLIST_THRESHOLD}/100 | Maximum {MAX_PROPERTIES_PROMPT} properties per run
+**Watchlist Criteria:** Properties scoring ≥{WATCHLIST_THRESHOLD}/100 | Max {MAX_PROPERTIES_PROMPT} per run
 **Portfolio Systemic Risk Index:** {systemic_index}/100
 **Decomposition:**
 {systemic_decomp}
 
 **Weighted Cluster Exposure:**
-[List top clusters from payload]
+{cluster_lines}
 
-**Z-Score Methodology:** Borough-normalized. Population = all scored properties within the same borough in this surveillance run. μ and σ computed fresh each run.
-
+**Z-Score Methodology:** Borough-normalized. Population = all scored properties in same borough this run. μ and σ computed fresh each run.
 **Anomaly Tiers:** ⚠️ Mild (Z ≥ 1.5) | 🚨 Significant (Z ≥ 2.0) | ⛔ Extreme (Z ≥ 2.5)
 
 **Data Quality Exclusions:**
-[List exceptions exactly as provided. State each is excluded pending manual file verification.]
+{exceptions_lines}
+State each is excluded pending manual file verification.
+
+Then:
 
 ## 📢 SYNDICATION SUMMARY
 
 Open with exactly:
 "This week, I tracked how quickly operational risk can emerge across NYC multifamily assets using a public-record surveillance workflow. Based on {watchlist_count} monitored records scoring ≥{WATCHLIST_THRESHOLD}/100, the review identified..."
 
-Then exactly 5 bullets — no repetition of table data:
-1. Highest-scoring asset: name, bucket, and primary causal driver only
-2. Velocity signal: which asset shows fastest acceleration and what that implies for monitoring cadence
-3. Portfolio systemic risk index headline and its single dominant decomposition component
-4. Anomaly flags: name any z-score anomalies with tier label
-5. Dominant weighted cluster and what it signals for collateral exposure concentration
+Exactly 5 bullets — no repetition of table data:
+1. Highest-scoring asset: name, bucket, primary causal driver only
+2. Velocity signal: fastest-accelerating asset and monitoring cadence implication
+3. Portfolio systemic risk index headline and dominant decomposition component
+4. Anomaly flags: name z-score anomalies with tier label
+5. Dominant weighted cluster and collateral exposure concentration signal
 
-Guardrails:
-- Exact counts from payload only
-- No non-standard banking phrases
-- No compliance paragraph in the body
+No compliance paragraph in body.
 
 Close with exactly:
 "Public records do not determine borrower liquidity, DSCR performance, or loan default probability. However, they can provide an early indication of collateral issues that may warrant additional diligence before they appear in standard reporting cycles."
@@ -566,26 +486,116 @@ Close with exactly:
 #CREFinance #CREDebt #RiskManagement #CommercialRealEstate #Multifamily
 """
 
+# --- PROMPT 2 DATA: Full property cards ---
+cards_payload = ""
+for asset in active_watchlist:
+    fp = asset["fingerprint"]
+    z_context = (
+        f"Z={asset['z_score']} (μ={asset['z_mu']}, σ={asset['z_sigma']}, "
+        f"population: all {asset['boro']} properties this run)"
+        if asset["z_score"] is not None else "Z=N/A (insufficient borough sample)"
+    )
+    escalation_text = (
+        "\n".join(f"  ⚠️  {f}" for f in asset["escalation_flags"])
+        if asset["escalation_flags"] else "  No escalation rules triggered"
+    )
+    event_rows = "\n".join(
+        f"| {i+1} | {ev['event_type'].replace('_',' ').title()} | {ev['event_class']} "
+        f"| {ev['event_status']} | {ev['readable_desc']} | +{ev['impact_score']} pts "
+        f"| {ev['event_date']} | {ev['days_outstanding']} days |"
+        for i, ev in enumerate(asset["events"])
+    )
+    cards_payload += f"""
+PROPERTY: {asset['address']} | BOROUGH: {asset['boro']}
+SCORE: {asset['current']}/100 | MOMENTUM(30D): {asset['momentum_30d']} | PRIOR(31-60D): {asset['prior_momentum']} | VELOCITY: {asset['velocity']:+d} | TREND: {asset['trend']}
+BUCKET: {asset['bucket_label']} — {asset['bucket_action']}
+Z-SCORE: {z_context} | ANOMALY: {asset['anomaly'] or 'None'}
+FINGERPRINT: Fire={fp['fire_events']} Structural={fp['structural_events']} Fresh={fp['fresh_event_count']} Recurrence={fp['recurrence_index']} Dominant={fp['dominant_type']}
+ESCALATION:
+{escalation_text}
+CAUSAL ATTRIBUTION:
+{"  " + chr(10)+"  ".join(asset['causal_attribution'])}
+EVENTS:
+| # | Event Type | Event Class | Status | Description | Impact | Date | Days Out |
+|---|-----------|-------------|--------|-------------|--------|------|----------|
+{event_rows}
+---
+"""
+
+prompt_2 = f"""
+You are an institutional CRE credit surveillance compiler. Produce the full property card section of a formal lender memo.
+For each property in the payload, output a structured card in exactly the format below.
+No padding. No inference beyond observed public records.
+
+PROPERTY DATA:
+{cards_payload}
+
+===== OUTPUT FORMAT FOR EACH PROPERTY =====
+
+---
+### [ADDRESS] | [BOROUGH]
+**Risk Bucket:** [BUCKET LABEL] — [ACTION]
+**Collateral Risk Score:** [SCORE]/100 | **Momentum (30D):** [MOMENTUM] pts | **Velocity:** [VELOCITY] pts | **Trend:** [TREND]
+**Z-Score:** [Z-SCORE CONTEXT] | **Anomaly:** [FLAG or None]
+
+**Escalation Flags:**
+[List each triggered rule or "No escalation rules triggered"]
+
+**Causal Attribution — Top Risk Drivers:**
+[List each driver exactly as provided]
+
+**Observed Public Record Events:**
+| # | Event Type | Event Class | Status | Description | Impact | Event Date | Days Outstanding |
+|---|-----------|-------------|--------|-------------|--------|------------|-----------------|
+[One row per event — reproduce exactly from payload]
+
+**Collateral Monitoring Commentary:**
+[One paragraph. Reference event types, days outstanding, and recurrence status exactly as observed. Do not infer borrower financial condition, default probability, capital needs, or tenant displacement.]
+
+---
+"""
+
 # =====================================================================
-# 11. OUTPUT
+# 10. TWO-PROMPT GROQ EXECUTION
 # =====================================================================
 client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
+
+print("\n" + "="*70)
+print(f"📋 CRE SURVEILLANCE PLATFORM v8.6b | {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+print(f"📊 SYSTEMIC RISK INDEX  : {systemic_index}/100")
+print(f"📐 DECOMPOSITION        :\n{systemic_decomp}")
+print(f"🏘️  TOP WEIGHTED CLUSTERS:")
+for ct, exp in top_clusters:
+    print(f"   {ct.replace('_',' ').title()}: {round(exp,1)}")
+print(f"📋 WATCHLIST COUNT      : {watchlist_count} properties")
+print("="*70 + "\n")
+
+# --- CALL 1: Matrix + Data Quality Gate + Syndication Summary ---
+print("⏳ Generating Section 1: Matrix, Data Quality Gate, Syndication Summary...\n")
 try:
-    response = client.chat.completions.create(
+    r1 = client.chat.completions.create(
         model="llama-3.1-8b-instant",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.0
+        messages=[{"role": "user", "content": prompt_1}],
+        temperature=0.0,
+        max_tokens=4000
     )
-    print("\n" + "="*70)
-    print(f"📋 CRE SURVEILLANCE PLATFORM v8.6 | {datetime.now().strftime('%Y-%m-%d %H:%M')}")
-    print(f"📊 SYSTEMIC RISK INDEX  : {systemic_index}/100")
-    print(f"📐 DECOMPOSITION        :\n{systemic_decomp}")
-    print(f"🏘️  TOP WEIGHTED CLUSTERS:")
-    for ct, exp in top_clusters:
-        print(f"   {ct.replace('_',' ').title()}: {round(exp,1)}")
-    print(f"📋 WATCHLIST COUNT      : {watchlist_count} properties")
-    print("="*70 + "\n")
-    print(response.choices[0].message.content)
-    print("\n" + "="*70)
+    print(r1.choices[0].message.content)
 except Exception as e:
-    print(f"❌ Narrative Compiler Failure: {e}")
+    print(f"❌ Section 1 Compiler Failure: {e}")
+
+print("\n" + "="*70)
+
+# --- CALL 2: Full Property Cards ---
+print("⏳ Generating Section 2: Full Property Cards...\n")
+try:
+    r2 = client.chat.completions.create(
+        model="llama-3.1-8b-instant",
+        messages=[{"role": "user", "content": prompt_2}],
+        temperature=0.0,
+        max_tokens=4000
+    )
+    print(r2.choices[0].message.content)
+except Exception as e:
+    print(f"❌ Section 2 Compiler Failure: {e}")
+
+print("\n" + "="*70)
