@@ -522,13 +522,13 @@ EVENTS:
 ---
 """
 
-prompt_2 = f"""
-You are an institutional CRE credit surveillance compiler. Produce the full property card section of a formal lender memo.
+CARD_PROMPT_TEMPLATE = """
+You are an institutional CRE credit surveillance compiler. Produce full property cards for a formal lender memo.
 For each property in the payload, output a structured card in exactly the format below.
 No padding. No inference beyond observed public records.
 
 PROPERTY DATA:
-{cards_payload}
+{batch_payload}
 
 ===== OUTPUT FORMAT FOR EACH PROPERTY =====
 
@@ -555,9 +555,45 @@ PROPERTY DATA:
 ---
 """
 
+def build_card_payload(asset):
+    fp = asset["fingerprint"]
+    z_context = (
+        f"Z={asset['z_score']} (μ={asset['z_mu']}, σ={asset['z_sigma']}, "
+        f"population: all {asset['boro']} properties this run)"
+        if asset["z_score"] is not None else "Z=N/A (insufficient borough sample)"
+    )
+    escalation_text = (
+        "\n".join(f"  ⚠️  {f}" for f in asset["escalation_flags"])
+        if asset["escalation_flags"] else "  No escalation rules triggered"
+    )
+    event_rows = "\n".join(
+        f"| {i+1} | {ev['event_type'].replace('_',' ').title()} | {ev['event_class']} "
+        f"| {ev['event_status']} | {ev['readable_desc']} | +{ev['impact_score']} pts "
+        f"| {ev['event_date']} | {ev['days_outstanding']} days |"
+        for i, ev in enumerate(asset["events"])
+    )
+    return f"""
+PROPERTY: {asset['address']} | BOROUGH: {asset['boro']}
+SCORE: {asset['current']}/100 | MOMENTUM(30D): {asset['momentum_30d']} | PRIOR(31-60D): {asset['prior_momentum']} | VELOCITY: {asset['velocity']:+d} | TREND: {asset['trend']}
+BUCKET: {asset['bucket_label']} — {asset['bucket_action']}
+Z-SCORE: {z_context} | ANOMALY: {asset['anomaly'] or 'None'}
+FINGERPRINT: Fire={fp['fire_events']} Structural={fp['structural_events']} Fresh={fp['fresh_event_count']} Recurrence={fp['recurrence_index']} Dominant={fp['dominant_type']}
+ESCALATION:
+{escalation_text}
+CAUSAL ATTRIBUTION:
+  {"  ".join(asset['causal_attribution'])}
+EVENTS:
+| # | Event Type | Event Class | Status | Description | Impact | Date | Days Out |
+|---|-----------|-------------|--------|-------------|--------|------|----------|
+{event_rows}
+---
+"""
+
 # =====================================================================
-# 10. TWO-PROMPT GROQ EXECUTION
+# 10. BATCHED GROQ EXECUTION
 # =====================================================================
+BATCH_SIZE = 3  # Max properties per card prompt to stay under 6000 TPM
+
 client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 
 print("\n" + "="*70)
@@ -585,17 +621,26 @@ except Exception as e:
 
 print("\n" + "="*70)
 
-# --- CALL 2: Full Property Cards ---
-print("⏳ Generating Section 2: Full Property Cards...\n")
-try:
-    r2 = client.chat.completions.create(
-        model="llama-3.1-8b-instant",
-        messages=[{"role": "user", "content": prompt_2}],
-        temperature=0.0,
-        max_tokens=4000
-    )
-    print(r2.choices[0].message.content)
-except Exception as e:
-    print(f"❌ Section 2 Compiler Failure: {e}")
+# --- CALLS 2+: Batched Property Cards (BATCH_SIZE properties per call) ---
+batches = [active_watchlist[i:i+BATCH_SIZE] for i in range(0, len(active_watchlist), BATCH_SIZE)]
+total_batches = len(batches)
+
+print(f"\n## 📋 FULL PROPERTY CARDS ({watchlist_count} properties | {total_batches} batches of {BATCH_SIZE})\n")
+
+for batch_num, batch in enumerate(batches, 1):
+    addresses = ", ".join(a["address"] for a in batch)
+    print(f"⏳ Generating Property Cards — Batch {batch_num}/{total_batches}: {addresses}...\n")
+    batch_payload = "".join(build_card_payload(a) for a in batch)
+    card_prompt   = CARD_PROMPT_TEMPLATE.format(batch_payload=batch_payload)
+    try:
+        r = client.chat.completions.create(
+            model="llama-3.1-8b-instant",
+            messages=[{"role": "user", "content": card_prompt}],
+            temperature=0.0,
+            max_tokens=3000
+        )
+        print(r.choices[0].message.content)
+    except Exception as e:
+        print(f"❌ Batch {batch_num} Compiler Failure: {e}")
 
 print("\n" + "="*70)
