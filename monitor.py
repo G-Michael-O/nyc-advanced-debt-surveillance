@@ -3,11 +3,12 @@ import requests
 from datetime import datetime, timedelta
 from groq import Groq
 
-print("🚀 Launching Version 8.3: Institutional Production Surveillance Engine...")
+print("🚀 Launching Version 8.3.1: Institutional Production Surveillance Engine...")
 
-# =====================================================================
-# 1. GOVERNANCE-APPROVED CALIBRATION METRICS
-# =====================================================================
+# =========================================================
+# 1. GOVERNANCE METRICS
+# =========================================================
+
 BOROUGH_BASELINES = {
     "MANHATTAN": 25,
     "BRONX": 35,
@@ -31,575 +32,268 @@ FRESH_WINDOW_DAYS = 30
 TOTAL_INGESTION_DAYS = 90
 WATCHLIST_SCORE_THRESHOLD = 65
 
-cutoff_date = datetime.now() - timedelta(days=TOTAL_INGESTION_DAYS)
-cutoff_str = cutoff_date.strftime("%Y-%m-%d")
+cutoff_str = (datetime.now() - timedelta(days=TOTAL_INGESTION_DAYS)).strftime("%Y-%m-%d")
 
 properties_db = {}
 exceptions_log = []
 seen_events = set()
 
+# =========================================================
+# 2. HELPERS
+# =========================================================
 
 def parse_nyc_date(date_str):
     if not date_str:
         return None
-
-    clean_date = str(date_str).split("T")[0].replace("-", "").strip()
-
+    clean = str(date_str).split("T")[0].replace("-", "").strip()
     try:
-        return datetime.strptime(clean_date, "%Y%m%d")
-    except ValueError:
+        return datetime.strptime(clean, "%Y%m%d")
+    except:
         try:
-            return datetime.strptime(clean_date, "%Y-%m-%d")
-        except Exception:
+            return datetime.strptime(clean, "%Y-%m-%d")
+        except:
             return None
 
 
 def clean_address(item):
-    num = str(
-        item.get("house_number")
-        or item.get("buildingnumber")
-        or item.get("house_no")
-        or ""
-    ).strip()
-
-    street = str(
-        item.get("street_name")
-        or item.get("streetname")
-        or item.get("street")
-        or ""
-    ).strip()
-
+    num = str(item.get("house_number") or item.get("buildingnumber") or "").strip()
+    street = str(item.get("street_name") or item.get("streetname") or "").strip()
     if not num or not street:
         return None
-
     return f"{num} {street}"
 
-
-# =====================================================================
-# 2. VALIDATED TIME-SERIES DATA INGESTION ENGINE
-# =====================================================================
+# =========================================================
+# 3. DATA INGESTION
+# =========================================================
 
 lit_url = "https://data.cityofnewyork.us/resource/59kj-x8nc.json"
 viol_url = "https://data.cityofnewyork.us/resource/3h2n-5cm9.json"
 
-
-# ---------------------------------------------------------------------
-# Housing Litigation Data
-# ---------------------------------------------------------------------
-
+# ---------------- Litigation ----------------
 try:
     res = requests.get(
         lit_url,
-        params={
-            "$where": f"caseopendate > '{cutoff_str}'",
-            "$order": "caseopendate DESC",
-            "$limit": 150
-        },
+        params={"$where": f"caseopendate > '{cutoff_str}'", "$limit": 150},
         timeout=15
     )
+    data = res.json()
 
-    res.raise_for_status()
-    lit_data = res.json()
+    for r in data:
+        rec_id = r.get("litigationid", "UNK")
+        dt = parse_nyc_date(r.get("caseopendate"))
+        if not dt:
+            continue
 
-    if isinstance(lit_data, list):
+        addr = clean_address(r)
+        if not addr:
+            continue
 
-        for record in lit_data:
+        boro = {"1":"BRONX","2":"MANHATTAN","3":"BROOKLYN","4":"QUEENS","5":"STATEN ISLAND"}.get(r.get("boroid"), "NYC")
 
-            rec_id = record.get("litigationid", "UNK")
+        key = f"{addr}, {boro}"
+        properties_db.setdefault(key, {"boro": boro, "events": []})
 
-            event_date = parse_nyc_date(
-                record.get("caseopendate")
-            )
+        case_type = str(r.get("casetype","")).upper()
 
-            if not event_date:
-                exceptions_log.append(
-                    f"Litigation ID {rec_id}: Invalid timestamp."
-                )
-                continue
+        if any(x in case_type for x in ["COMPLIED","CORRECTED","DISMISSED","CODE"]):
+            cat = "REMEDIATION_EVENT"
+        elif "HARASSMENT" in case_type:
+            cat = "HARASSMENT_CLAIM"
+        else:
+            cat = "LITIGATION_GENERAL"
 
-            addr = clean_address(record)
+        event_key = f"{key}_{rec_id}_{dt}"
+        if event_key in seen_events:
+            continue
+        seen_events.add(event_key)
 
-            if not addr:
-                exceptions_log.append(
-                    f"Litigation ID {rec_id}: Incomplete address."
-                )
-                continue
-
-            boro_code = str(
-                record.get("boroid", "NYC")
-            )
-
-            boro_name = {
-                "1": "MANHATTAN",
-                "2": "BRONX",
-                "3": "BROOKLYN",
-                "4": "QUEENS",
-                "5": "STATEN ISLAND"
-            }.get(boro_code, "NYC")
-
-            full_key = f"{addr}, {boro_name}"
-
-            if full_key not in properties_db:
-                properties_db[full_key] = {
-                    "boro": boro_name,
-                    "events": []
-                }
-
-            case_type = str(
-                record.get("casetype", "")
-            ).upper()
-
-            if any(
-                k in case_type for k in [
-                    "CODE COMPLIANCE",
-                    "COMPLIED",
-                    "CORRECTED",
-                    "DISMISSED"
-                ]
-            ):
-                event_cat = "REMEDIATION_EVENT"
-
-            else:
-                if "HARASSMENT" in case_type:
-                    event_cat = "HARASSMENT_CLAIM"
-                else:
-                    event_cat = "LITIGATION_GENERAL"
-
-            event_key = (
-                f"{full_key}_{rec_id}_"
-                f"{event_date}_{event_cat}"
-            )
-
-            if event_key in seen_events:
-                continue
-
-            seen_events.add(event_key)
-
-            properties_db[full_key]["events"].append({
-                "cat": event_cat,
-                "age_days": (
-                    datetime.now() - event_date
-                ).days,
-                "desc": f"Litigation: {case_type[:60]}"
-            })
+        properties_db[key]["events"].append({
+            "cat": cat,
+            "age_days": (datetime.now() - dt).days,
+            "desc": f"Litigation:{case_type[:35]}"
+        })
 
 except Exception as e:
+    exceptions_log.append(f"LIT API FAIL: {e}")
 
-    exceptions_log.append(
-        f"Critical Litigation API Failure: {e}"
-    )
-
-
-# ---------------------------------------------------------------------
-# DOB Violation Data
-# ---------------------------------------------------------------------
-
+# ---------------- Violations ----------------
 try:
-
     res = requests.get(
         viol_url,
-        params={
-            "$where": f"issue_date > '{cutoff_str}'",
-            "$order": "issue_date DESC",
-            "$limit": 150
-        },
+        params={"$where": f"issue_date > '{cutoff_str}'", "$limit": 150},
         timeout=15
     )
+    data = res.json()
 
-    res.raise_for_status()
+    for r in data:
+        rec_id = r.get("violation_number","UNK")
+        dt = parse_nyc_date(r.get("issue_date"))
+        if not dt:
+            continue
 
-    viol_data = res.json()
+        addr = clean_address(r)
+        if not addr:
+            continue
 
-    if isinstance(viol_data, list):
+        raw_boro = str(r.get("boro") or r.get("borough") or "").upper()
+        boro = {
+            "1":"BRONX","2":"MANHATTAN","3":"BROOKLYN","4":"QUEENS","5":"STATEN ISLAND",
+            "BX":"BRONX","MN":"MANHATTAN","BK":"BROOKLYN","QN":"QUEENS","SI":"STATEN ISLAND"
+        }.get(raw_boro, "NYC")
 
-        for record in viol_data:
+        key = f"{addr}, {boro}"
+        properties_db.setdefault(key, {"boro": boro, "events": []})
 
-            rec_id = record.get(
-                "violation_number",
-                "UNK"
-            )
+        desc = str(r.get("description","")).upper()
+        sev = str(r.get("violation_category","")).upper()
 
-            event_date = parse_nyc_date(
-                record.get("issue_date")
-            )
+        if any(x in desc for x in ["COMPLIED","CORRECTED","DISMISSED"]):
+            cat = "REMEDIATION_EVENT"
+        elif any(x in desc for x in ["REMEDY","SEAL","SECURE","SAFEGUARD"]):
+            cat = "REMEDIATION_EVENT"
+        elif "FIRE" in desc:
+            cat = "FIRE_DAMAGE"
+        elif "FACADE" in desc or "COLLAPSE" in desc:
+            cat = "STRUCTURAL_INSTABILITY"
+        elif "CLASS 1" in sev:
+            cat = "HAZARDOUS_CLASS_1"
+        else:
+            cat = "STANDARD_VIOLATION"
 
-            if not event_date:
-                exceptions_log.append(
-                    f"Violation ID {rec_id}: Invalid timestamp."
-                )
-                continue
+        event_key = f"{key}_{rec_id}_{dt}"
+        if event_key in seen_events:
+            continue
+        seen_events.add(event_key)
 
-            addr = clean_address(record)
-
-            if not addr:
-                exceptions_log.append(
-                    f"Violation ID {rec_id}: Incomplete address."
-                )
-                continue
-
-            boro_raw = str(
-                record.get("boro", "")
-                or record.get("borough", "")
-                or ""
-            ).strip().upper()
-
-            BORO_LOOKUP = {
-                "1": "MANHATTAN",
-                "2": "BRONX",
-                "3": "BROOKLYN",
-                "4": "QUEENS",
-                "5": "STATEN ISLAND",
-                "MN": "MANHATTAN",
-                "BX": "BRONX",
-                "BK": "BROOKLYN",
-                "QN": "QUEENS",
-                "SI": "STATEN ISLAND"
-            }
-
-            boro_name = BORO_LOOKUP.get(
-                boro_raw,
-                "NYC"
-            )
-
-            full_key = f"{addr}, {boro_name}"
-
-            if full_key not in properties_db:
-                properties_db[full_key] = {
-                    "boro": boro_name,
-                    "events": []
-                }
-
-            desc = str(
-                record.get(
-                    "description",
-                    ""
-                )
-            ).upper()
-
-            severity = str(
-                record.get(
-                    "violation_category",
-                    ""
-                )
-            ).upper()
-
-            if any(
-                k in desc for k in [
-                    "CODE COMPLIANCE",
-                    "COMPLIED",
-                    "CORRECTED",
-                    "DISMISSED"
-                ]
-            ):
-                event_cat = "REMEDIATION_EVENT"
-
-            elif "FIRE" in desc:
-                event_cat = "FIRE_DAMAGE"
-
-            elif (
-                "FACADE" in desc
-                or "COLLAPSE" in desc
-            ):
-                event_cat = "STRUCTURAL_INSTABILITY"
-
-            elif (
-                "CLASS 1" in severity
-                or "HAZARDOUS" in severity
-            ):
-                event_cat = "HAZARDOUS_CLASS_1"
-
-            else:
-                event_cat = "STANDARD_VIOLATION"
-
-            event_key = (
-                f"{full_key}_{rec_id}_"
-                f"{event_date}_{event_cat}"
-            )
-
-            if event_key in seen_events:
-                continue
-
-            seen_events.add(event_key)
-
-            properties_db[full_key]["events"].append({
-                "cat": event_cat,
-                "age_days": (
-                    datetime.now() - event_date
-                ).days,
-                "desc": f"DOB: {desc[:60]}"
-            })
+        properties_db[key]["events"].append({
+            "cat": cat,
+            "age_days": (datetime.now() - dt).days,
+            "desc": f"DOB:{desc[:35]}"
+        })
 
 except Exception as e:
+    exceptions_log.append(f"VIOL API FAIL: {e}")
 
-    exceptions_log.append(
-        f"Critical Violation API Failure: {e}"
-    )
-# =====================================================================
-# 3. ZERO DATA EXCLUSION GATE
-# =====================================================================
+# =========================================================
+# 4. ZERO DATA GATE
+# =========================================================
 
-if not properties_db or all(
-    len(v["events"]) == 0 for v in properties_db.values()
-):
-    print("\n===================================================")
-    print("📋 CRE SURVEILLANCE PLATFORM: VERSION 8.3")
-    print("===================================================")
-    print("⚠️ No qualifying public-record observations detected.")
-    print("===================================================")
+if not properties_db:
+    print("No data")
     exit()
 
+# =========================================================
+# 5. SCORE ENGINE
+# =========================================================
 
-# =====================================================================
-# 4. DETERMINISTIC SCORE ENGINE
-# =====================================================================
-
-calculated_portfolio = []
+portfolio = []
 
 for addr, asset in properties_db.items():
 
-    boro = asset["boro"]
-    baseline = BOROUGH_BASELINES.get(boro, 25)
+    base = BOROUGH_BASELINES.get(asset["boro"], 25)
+    current = base
+    prior = base
 
-    current_score = baseline
-    prior_risk_baseline = baseline
+    counts = {}
+    traces = []
 
-    category_counts = {}
-    event_traces = []
+    events = sorted(asset["events"], key=lambda x: x["age_days"], reverse=True)
 
-    sorted_events = sorted(
-        asset["events"],
-        key=lambda x: x["age_days"],
-        reverse=True
-    )
+    for e in events:
 
-    for ev in sorted_events:
+        cat = e["cat"]
+        counts[cat] = counts.get(cat, 0) + 1
+        recurring = counts[cat] > 1
 
-        cat = ev["cat"]
+        fresh = e["age_days"] <= FRESH_WINDOW_DAYS
 
-        category_counts[cat] = (
-            category_counts.get(cat, 0) + 1
-        )
-
-        is_recurring = category_counts[cat] > 1
-
-        is_fresh = (
-            ev["age_days"] <= FRESH_WINDOW_DAYS
-        )
-
-        if is_fresh:
-            lifecycle = (
-                "NEW EVENT"
-                if not is_recurring
-                else "PERSISTENT CONDITION"
-            )
+        if fresh:
+            lifecycle = "NEW EVENT" if not recurring else "PERSISTENT CONDITION"
         else:
-            lifecycle = (
-                "BACKGROUND CONDITION"
-                if not is_recurring
-                else "PERSISTENT CONDITION"
-            )
+            lifecycle = "BACKGROUND CONDITION"
 
-        amplifier = 1.35 if is_recurring else 1.00
+        mult = 1.35 if recurring else 1.0
+        pts = RULE_SCORE_MATRIX.get(cat, 5)
 
-        base_points = RULE_SCORE_MATRIX.get(cat, 5)
-
-        if is_fresh:
-            points_added = base_points * amplifier
-            current_score += points_added
-
+        if fresh:
+            current += pts * mult
         else:
-            points_added = (
-                base_points * amplifier * 0.70
-            )
+            current += pts * mult * 0.7
+            prior += pts * mult * 0.7
 
-            current_score += points_added
-            prior_risk_baseline += points_added
+        traces.append(f"{e['desc']} | {lifecycle} | +{int(pts)}")
 
-        event_traces.append(
-            f"Type: {ev['desc']} | "
-            f"Classification: {lifecycle} | "
-            f"Score Impact: +{int(points_added)}"
-        )
+    current = min(100, int(current))
+    prior = min(100, int(prior))
 
-    current_score = min(int(current_score), 100)
-    prior_risk_baseline = min(
-        int(prior_risk_baseline),
-        100
-    )
-
-    net_risk_acceleration = (
-        current_score - prior_risk_baseline
-    )
-
-    calculated_portfolio.append({
+    portfolio.append({
         "address": addr,
-        "boro": boro,
-        "current": current_score,
-        "prior": prior_risk_baseline,
-        "velocity": net_risk_acceleration,
-        "traces": event_traces
+        "boro": asset["boro"],
+        "current": current,
+        "prior": prior,
+        "accel": current - prior,
+        "traces": traces
     })
 
+# =========================================================
+# 6. WATCHLIST
+# =========================================================
 
-# =====================================================================
-# 5. WATCHLIST CONSTRUCTION
-# =====================================================================
-
-active_watchlist = [
-    asset for asset in calculated_portfolio
-    if asset["current"] >= WATCHLIST_SCORE_THRESHOLD
-]
-
-active_watchlist = sorted(
-    active_watchlist,
-    key=lambda x: (
-        x["current"],
-        x["velocity"]
-    ),
+watchlist = sorted(
+    [p for p in portfolio if p["current"] >= WATCHLIST_SCORE_THRESHOLD],
+    key=lambda x: x["current"],
     reverse=True
-)
+)[:20]
 
-# Governance display cap
-active_watchlist = active_watchlist[:20]
+count = len(watchlist)
 
+payload = "\n".join([
+    f"{w['address']} | {w['current']} | {w['prior']} | {w['accel']}\n" +
+    "\n".join(w["traces"])
+    for w in watchlist
+])
 
-# =====================================================================
-# 6. REPORT DATA PAYLOAD
-# =====================================================================
-
-watchlist_count = len(active_watchlist)
-
-data_context_payload = (
-    f"WATCHLIST ASSETS ({watchlist_count} TOTAL):\n\n"
-)
-
-for asset in active_watchlist:
-
-    data_context_payload += (
-        f"ADDRESS: {asset['address']}\n"
-        f"Current Score: {asset['current']}/100\n"
-        f"Prior Risk Baseline: {asset['prior']}/100\n"
-        f"Net Risk Acceleration: {asset['velocity']}\n"
-        f"Observed Public-Record Events:\n"
-        + "\n".join(
-            f"- {trace}"
-            for trace in asset["traces"]
-        )
-        + "\n\n"
-    )
-
-exceptions_payload = (
-    "DATA QUALITY EXCLUSIONS:\n"
-)
-
-if exceptions_log:
-    for exc in exceptions_log[:5]:
-        exceptions_payload += (
-            f"- {exc}\n"
-        )
-else:
-    exceptions_payload += (
-        "- None\n"
-    )
-
-
-# =====================================================================
-# 7. INSTITUTIONAL REPORTING COMPILER
-# =====================================================================
+# =========================================================
+# 7. PROMPT (TOKEN SAFE)
+# =========================================================
 
 prompt = f"""
-You are an institutional commercial real estate
-collateral surveillance reporting compiler.
+Institutional CRE surveillance report.
 
-The following information comes from a deterministic,
-rule-based monitoring engine.
+Rules:
+- Use ONLY provided assets ({count})
+- No ranking or Top lists
+- No borrower financial inference
+- No DSCR, liquidity, default assumptions
+- Reproduce event text exactly
 
-REPORTING GOVERNANCE RULES:
+Output:
+- Table-style watchlist
+- Then each asset breakdown
+- Then DATA EXCLUSIONS
 
-1. Higher scores indicate greater observed collateral
-risk based solely on public-record severity,
-persistence, and timing.
+DATA:
+{payload}
 
-2. Use ONLY the exact assets provided.
-Do NOT rank, remove, truncate, or create a Top 5 list.
-Display all {watchlist_count} assets exactly as supplied.
-
-3. Event descriptions must be reproduced exactly.
-Do not interpret, expand, or infer additional conditions.
-
-4. Use the classifications exactly as provided:
-NEW EVENT
-PERSISTENT CONDITION
-BACKGROUND CONDITION
-
-5. Do not infer:
-- borrower financial distress
-- liquidity weakness
-- DSCR deterioration
-- default probability
-- valuation impact
-- required capital expenditure
-
-6. Preserve all numerical values exactly:
-Current Score,
-Prior Risk Baseline,
-Net Risk Acceleration,
-Score Impact.
-
-7. Format the report exactly with these sections:
-
-INSTITUTIONAL COLLATERAL SURVEILLANCE REPORT
-
-WATCHLIST COUNT
-RISK THRESHOLD
-COLLATERAL SURVEILLANCE WATCHLIST
-DATA QUALITY EXCLUSIONS
-
-8. End with exactly one sentence describing
-the appropriate collateral monitoring cadence only.
-
-INPUT DATA:
-
-{data_context_payload}
-
-{exceptions_payload}
+EXCLUSIONS:
+{exceptions_log[:3]}
 """
 
+# =========================================================
+# 8. EXECUTION
+# =========================================================
 
-# =====================================================================
-# 8. GROQ EXECUTION LAYER
-# =====================================================================
-
-client = Groq(
-    api_key=os.environ.get(
-        "GROQ_API_KEY"
-    )
-)
+client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 
 try:
-
-    response = (
-        client.chat.completions.create(
-            model="llama-3.1-8b-instant",
-            messages=[
-                {
-                    "role": "user",
-                    "content": prompt
-                }
-            ],
-            temperature=0.0,
-            max_tokens=4000
-        )
+    r = client.chat.completions.create(
+        model="llama-3.1-8b-instant",
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0,
+        max_tokens=3000
     )
 
-    print("\n===================================================")
-    print(
-        response.choices[0].message.content
-    )
-    print("===================================================")
+    print(r.choices[0].message.content)
 
 except Exception as e:
-
-    print(
-        f"❌ Layer 5 Institutional Reporting Failure: {e}"
-    )
+    print("FAIL:", e)
