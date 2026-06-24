@@ -1,5 +1,6 @@
 import os
 import math
+import time
 import requests
 from datetime import datetime, timedelta
 from collections import defaultdict
@@ -495,7 +496,7 @@ You are an institutional CRE credit surveillance compiler. Produce full property
 Strict rules:
 - Reproduce all data exactly as provided. Do not recalculate or reformat numbers.
 - Causal attribution: print each driver on its own numbered line. Never concatenate on one line.
-- Collateral Monitoring Commentary: restate only what public records show. Reference event type, class, date, and days outstanding. Do not use phrases implying credit advice, borrower obligation, financial consequence, or remediation urgency.
+- Collateral Monitoring Commentary: write 2-3 full prose sentences. State what public records show using natural language. Reference the event type by name, whether it is a new event or recurring condition, the date filed, and how many days it has been outstanding. Example: "A fire damage event was filed on 06/23/2026 and remains open after 1 day. A recurring unresolved fire damage condition was also recorded on the same date, indicating the condition has persisted across multiple observation periods." Do not use comma-separated lists. Do not imply credit advice, borrower obligation, financial consequence, or remediation urgency.
 - Credit Opinion layer: state "NOT GENERATED — reserved for qualified credit officer review." Do not populate it.
 
 PROPERTY DATA:
@@ -603,20 +604,43 @@ total_batches = len(batches)
 
 print(f"\n## 📋 FULL PROPERTY CARDS ({watchlist_count} properties | {total_batches} batches of max {BATCH_SIZE})\n")
 
+BATCH_SLEEP_SECONDS = 22   # Wait between batches to respect 6000 TPM window
+MAX_RETRIES         = 3
+
 for batch_num, batch in enumerate(batches, 1):
-    addresses   = ", ".join(a["address"] for a in batch)
+    addresses     = ", ".join(a["address"] for a in batch)
     print(f"⏳ Batch {batch_num}/{total_batches}: {addresses}...\n")
     batch_payload = "".join(build_card_payload(a) for a in batch)
     card_prompt   = CARD_PROMPT_TEMPLATE.format(batch_payload=batch_payload)
-    try:
-        r = client.chat.completions.create(
-            model="llama-3.1-8b-instant",
-            messages=[{"role": "user", "content": card_prompt}],
-            temperature=0.0,
-            max_tokens=3000
-        )
-        print(r.choices[0].message.content)
-    except Exception as e:
-        print(f"❌ Batch {batch_num} Compiler Failure: {e}")
+
+    success = False
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            r = client.chat.completions.create(
+                model="llama-3.1-8b-instant",
+                messages=[{"role": "user", "content": card_prompt}],
+                temperature=0.0,
+                max_tokens=3000
+            )
+            print(r.choices[0].message.content)
+            success = True
+            break
+        except Exception as e:
+            err_str = str(e)
+            if "429" in err_str or "rate_limit" in err_str:
+                wait = BATCH_SLEEP_SECONDS * attempt
+                print(f"⚠️  Rate limit hit (attempt {attempt}/{MAX_RETRIES}). Waiting {wait}s before retry...")
+                time.sleep(wait)
+            else:
+                print(f"❌ Batch {batch_num} Compiler Failure: {e}")
+                break
+
+    if not success:
+        print(f"❌ Batch {batch_num} failed after {MAX_RETRIES} attempts. Skipping.")
+
+    # Sleep between successful batches to avoid hitting TPM ceiling on next call
+    if batch_num < total_batches:
+        print(f"   ⏸️  Waiting {BATCH_SLEEP_SECONDS}s before next batch...\n")
+        time.sleep(BATCH_SLEEP_SECONDS)
 
 print("\n" + "="*70)
