@@ -54,7 +54,6 @@ def clean_address(item):
 lit_url = "https://data.cityofnewyork.us/resource/59kj-x8nc.json"
 viol_url = "https://data.cityofnewyork.us/resource/3h2n-5cm9.json"
 
-# Housing Litigation Ingestion
 try:
     res = requests.get(
         lit_url,
@@ -100,12 +99,11 @@ try:
             properties_db[full_key]["events"].append({
                 "cat": event_cat,
                 "age_days": (datetime.now() - event_date).days,
-                "desc": f"Litigation: {case_type}"
+                "desc": f"Litigation: {case_type[:60]}"
             })
 except Exception as e:
     exceptions_log.append(f"Critical Litigation API Failure: {e}")
 
-# DOB Violations Ingestion
 try:
     res = requests.get(
         viol_url,
@@ -133,8 +131,8 @@ try:
                 "1": "MANHATTAN", "2": "BRONX", "3": "BROOKLYN", "4": "QUEENS", "5": "STATEN ISLAND",
                 "MN": "MANHATTAN", "BX": "BRONX", "BK": "BROOKLYN", "QN": "QUEENS", "SI": "STATEN ISLAND"
             }
-            boro_name = BORO_LOOKUP.get(boro_raw, "NYC")
 
+            boro_name = BORO_LOOKUP.get(boro_raw, "NYC")
             full_key = f"{addr}, {boro_name}"
 
             if full_key not in properties_db:
@@ -162,28 +160,20 @@ try:
             properties_db[full_key]["events"].append({
                 "cat": event_cat,
                 "age_days": (datetime.now() - event_date).days,
-                "desc": f"DOB: {desc[:25]}"
+                "desc": f"DOB: {desc[:60]}"
             })
 except Exception as e:
     exceptions_log.append(f"Critical Violation API Failure: {e}")
 
 # =====================================================================
-# 3. ABSOLUTE ZERO DATA EXCLUSION GATE
+# 3. ZERO DATA EXCLUSION GATE
 # =====================================================================
 if not properties_db or all(len(v["events"]) == 0 for v in properties_db.values()):
-    print("\n========================================================")
-    print("📋 CRE SURVEILLANCE PLATFORM: VERSION 8.2 (PRODUCTION RUN)")
-    print("========================================================")
-    print("⚠️ No qualifying public-record observations detected.")
-    if exceptions_log:
-        print("\nDATA QUALITY EXCEPTIONS:")
-        for exc in exceptions_log[:5]:
-            print(f"- {exc}")
-    print("========================================================")
+    print("📋 No qualifying records.")
     exit()
 
 # =====================================================================
-# 4. DETERMINISTIC SCORE ENGINE
+# 4. SCORE ENGINE
 # =====================================================================
 calculated_portfolio = []
 
@@ -192,18 +182,18 @@ for addr, asset in properties_db.items():
     baseline = BOROUGH_BASELINES.get(boro, 25)
 
     current_score = baseline
-    historical_component_score = baseline
-    cat_counts = {}
+    prior_risk_baseline = baseline
+    cat_counts = []
     event_traces = []
 
     sorted_events = sorted(asset["events"], key=lambda x: x["age_days"], reverse=True)
 
     for ev in sorted_events:
         cat = ev["cat"]
-        cat_counts[cat] = cat_counts.get(cat, 0) + 1
-        is_recurring = cat_counts[cat] > 1
+        cat_counts.append(cat)
+        is_recurring = cat_counts.count(cat) > 1
 
-        lifecycle = "NEW_EVENT" if not is_recurring else "RECURRING CONDITION"
+        lifecycle = "NEW_EVENT" if not is_recurring else "PERSISTENT CONDITION"
         amplifier = 1.35 if is_recurring else 1.0
 
         is_fresh = ev["age_days"] <= FRESH_WINDOW_DAYS
@@ -215,54 +205,47 @@ for addr, asset in properties_db.items():
         else:
             points_added = base_points * amplifier * 0.70
             current_score += points_added
-            historical_component_score += points_added
+            prior_risk_baseline += points_added
 
         event_traces.append(
             f"Type: {ev['desc']} | Classification: {lifecycle} | Score Impact: +{int(points_added)}"
         )
 
     current_score = max(0, min(int(current_score), 100))
-    historical_component_score = max(0, min(int(historical_component_score), 100))
+    prior_risk_baseline = max(0, min(int(prior_risk_baseline), 100))
 
-    velocity = historical_component_score - current_score
+    net_risk_acceleration = current_score - prior_risk_baseline
 
     calculated_portfolio.append({
         "address": addr,
         "boro": boro,
         "current": current_score,
-        "historic_component": historical_component_score,
-        "velocity": velocity,
+        "prior": prior_risk_baseline,
+        "velocity": net_risk_acceleration,
         "traces": event_traces
     })
 
 # =====================================================================
-# 5. WATCHLIST CONSTRUCTION
+# 5. WATCHLIST
 # =====================================================================
 active_watchlist = [a for a in calculated_portfolio if a["current"] >= WATCHLIST_SCORE_THRESHOLD]
 
-active_watchlist = sorted(
-    active_watchlist,
-    key=lambda x: (x["current"], x["velocity"]),
-    reverse=True
-)
+active_watchlist = sorted(active_watchlist, key=lambda x: (x["current"], x["velocity"]), reverse=True)
 
-if len(active_watchlist) > 20:
-    active_watchlist = active_watchlist[:20]
+active_watchlist = active_watchlist[:20]
 
 # =====================================================================
-# 6. NARRATIVE GENERATION
+# 6. OUTPUT COMPILATION
 # =====================================================================
 watchlist_count = len(active_watchlist)
 
 data_context_payload = f"TOTAL_WATCHLIST_COUNT: {watchlist_count}\n"
-data_context_payload += "WATCHLIST ASSETS:\n"
+data_context_payload += "COLLATERAL SURVEILLANCE WATCHLIST:\n"
 
 for asset in active_watchlist:
     data_context_payload += (
         f"- ADDRESS: {asset['address']}\n"
-        f"  Scores: Current={asset['current']}/100, "
-        f"Pre-Fresh Event Risk State={asset['historic_component']}/100, "
-        f"Net Fresh Velocity={asset['velocity']} points\n"
+        f"  Scores: Current={asset['current']}/100, Prior Risk Baseline={asset['prior']}/100, Net Risk Acceleration={asset['velocity']}\n"
         f"  Events:\n  " + "\n  ".join(asset['traces']) + "\n\n"
     )
 
@@ -270,22 +253,18 @@ exceptions_payload = "DATA QUALITY EXCLUSIONS:\n"
 exceptions_payload += "\n".join([f"- {exc}" for exc in exceptions_log[:3]]) if exceptions_log else "- None"
 
 prompt = f"""
-You are an executive CRE risk reporting compiler.
+You are an institutional CRE credit risk compiler.
 
 {data_context_payload}
 
 {exceptions_payload}
 
-Format into structured institutional credit memo sections only.
-Ensure strict factual reporting with no inference beyond observed records.
-
 WATCHLIST COUNT: {watchlist_count}
 THRESHOLD: {WATCHLIST_SCORE_THRESHOLD}/100
 
-This week, I tracked how quickly operational risk can emerge across NYC multifamily assets using a public-record surveillance workflow...
+Interpret strictly as collateral condition signals only.
 
-Include compliance disclaimer:
-Public records do not determine borrower liquidity or loan default probability.
+This week, I tracked how quickly operational risk can emerge across NYC multifamily assets...
 """
 
 client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
