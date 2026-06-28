@@ -351,14 +351,12 @@ for asset in calculated_portfolio:
     asset["anomaly"] = get_anomaly_flag(z)
 
 # =====================================================================
-# 6. WEIGHTED CLUSTER EXPOSURE
 # =====================================================================
-recency_weight   = lambda age: 1.0 if age <= FRESH_WINDOW_DAYS else 0.7 if age <= 60 else 0.5
-cluster_exposure = defaultdict(float)
-for asset in calculated_portfolio:
-    for ev in asset["events"]:
-        cluster_exposure[ev["event_type"]] += ev["impact_score"] * recency_weight(ev["days_outstanding"])
-top_clusters = sorted(cluster_exposure.items(), key=lambda x: x[1], reverse=True)[:MAX_CLUSTERS_SHOWN]
+# 6. WEIGHTED CLUSTER EXPOSURE
+# FIX 2: Computed across watchlist only so memo numbers match visible property cards
+# FIX 3: Totals reflect post-deduplication exposure (max 2 events per type per property)
+# =====================================================================
+recency_weight = lambda age: 1.0 if age <= FRESH_WINDOW_DAYS else 0.7 if age <= 60 else 0.5
 
 # =====================================================================
 # 7. WATCHLIST
@@ -373,22 +371,45 @@ watchlist_count = len(active_watchlist)
 # 8. SYSTEMIC RISK INDEX DECOMPOSITION
 # =====================================================================
 if active_watchlist:
-    total_score        = sum(a["current"] for a in active_watchlist)
-    systemic_index     = round(total_score / watchlist_count, 1)
-    fire_contrib       = round(sum(a["driver_scores"].get("FIRE_DAMAGE",0)            for a in active_watchlist) / max(total_score,1) * 100, 1)
-    structural_contrib = round(sum(a["driver_scores"].get("STRUCTURAL_INSTABILITY",0) for a in active_watchlist) / max(total_score,1) * 100, 1)
-    recency_contrib    = round(sum(a["momentum_30d"]                                   for a in active_watchlist) / max(total_score,1) * 100, 1)
-    recurrence_raw     = round(sum(a["fingerprint"]["recurrence_index"]                for a in active_watchlist) / max(watchlist_count,1) * 10, 1)
-    recurrence_contrib = min(recurrence_raw, max(0, 100 - fire_contrib - structural_contrib - recency_contrib))
+    total_score    = sum(a["current"] for a in active_watchlist)
+    systemic_index = round(total_score / watchlist_count, 1)
+
+    # FIX 2: Cluster exposure scoped to watchlist only — not full portfolio
+    watchlist_cluster_exposure = defaultdict(float)
+    for a in active_watchlist:
+        for ev in a["events"]:
+            watchlist_cluster_exposure[ev["event_type"]] += (
+                ev["impact_score"] * recency_weight(ev["days_outstanding"])
+            )
+
+    # FIX 1: These are independent ratio indicators, not additive decomposition.
+    # Each is expressed as a share of total watchlist score for that signal type.
+    # They are NOT mutually exclusive and will NOT sum to 100%.
+    total_fire       = sum(a["driver_scores"].get("FIRE_DAMAGE", 0)            for a in active_watchlist)
+    total_structural = sum(a["driver_scores"].get("STRUCTURAL_INSTABILITY", 0) for a in active_watchlist)
+    total_momentum   = sum(a["momentum_30d"]                                    for a in active_watchlist)
+    avg_recurrence   = sum(a["fingerprint"]["recurrence_index"]                 for a in active_watchlist) / max(watchlist_count, 1)
+
+    fire_ratio       = round(total_fire       / max(total_score, 1) * 100, 1)
+    structural_ratio = round(total_structural / max(total_score, 1) * 100, 1)
+    recency_ratio    = round(total_momentum   / max(total_score, 1) * 100, 1)
+    recurrence_avg   = round(avg_recurrence, 2)
+
+    # FIX 1: Renamed to "Risk Component Indicators" with explicit methodology note
     systemic_decomp = (
-        f"  Structural Risk Contribution : {structural_contrib}%\n"
-        f"  Fire Risk Concentration      : {fire_contrib}%\n"
-        f"  Recency Pressure (30D)       : {recency_contrib}%\n"
-        f"  Recurrence Density           : {recurrence_contrib}%"
+        f"  NOTE: These are independent ratio indicators, not additive percentages.\n"
+        f"  Each measures a specific signal as a share of total watchlist risk score.\n"
+        f"  They are not mutually exclusive and will not sum to 100%.\n"
+        f"  ─────────────────────────────────────────────────────\n"
+        f"  Fire Risk Ratio           : {fire_ratio}% of total watchlist score\n"
+        f"  Structural Risk Ratio     : {structural_ratio}% of total watchlist score\n"
+        f"  Recency Pressure (30D)    : {recency_ratio}% of total watchlist score\n"
+        f"  Avg Recurrence per Asset  : {recurrence_avg} recurring conditions"
     )
 else:
-    systemic_index  = 0.0
-    systemic_decomp = "  No active watchlist properties."
+    systemic_index              = 0.0
+    systemic_decomp             = "  No active watchlist properties."
+    watchlist_cluster_exposure  = defaultdict(float)
 
 # =====================================================================
 # 9. PROMPT ASSEMBLY
@@ -401,7 +422,12 @@ for a in active_watchlist:
         f"| {a['velocity']:+d} pts | {a['trend']} | {a['bucket_label']} | Z={z_str} | {a['anomaly'] or 'None'} |"
     )
 
-cluster_lines      = "\n".join(f"  {ct.replace('_',' ').title()}: {round(exp,1)}" for ct, exp in top_clusters)
+# Use watchlist-scoped cluster exposure so memo numbers match property cards
+top_clusters  = sorted(watchlist_cluster_exposure.items(), key=lambda x: x[1], reverse=True)[:MAX_CLUSTERS_SHOWN]
+cluster_lines = (
+    "  NOTE: Watchlist-scoped only. Totals reflect post-deduplication exposure (max 2 events per type per property).\n" +
+    "\n".join(f"  {ct.replace('_',' ').title()}: {round(exp,1)}" for ct, exp in top_clusters)
+)
 exceptions_lines   = "\n".join(f"  - {e}" for e in exceptions_log[:3]) if exceptions_log else "  - None"
 run_date_str       = datetime.now().strftime('%B %d, %Y')
 run_datetime_str   = datetime.now().strftime('%Y-%m-%d %H:%M')
@@ -575,8 +601,8 @@ client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 print("\n" + "="*70)
 print(f"📋 CRE SURVEILLANCE PLATFORM v8.7 | {run_datetime_str}")
 print(f"📊 SYSTEMIC RISK INDEX  : {systemic_index}/100")
-print(f"📐 DECOMPOSITION        :\n{systemic_decomp}")
-print(f"🏘️  TOP WEIGHTED CLUSTERS:")
+print(f"📐 RISK COMPONENT INDICATORS:\n{systemic_decomp}")
+print(f"🏘️  TOP WEIGHTED CLUSTERS (watchlist-scoped, post-dedup):")
 for ct, exp in top_clusters:
     print(f"   {ct.replace('_',' ').title()}: {round(exp,1)}")
 print(f"📋 WATCHLIST COUNT      : {watchlist_count} properties")
